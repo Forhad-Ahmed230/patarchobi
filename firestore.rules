@@ -1,0 +1,95 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+    function signedIn() { return request.auth != null; }
+    function admin() {
+      return signedIn() && request.auth.token.email_verified == true
+        && request.auth.token.email in ['habibak2024@gmail.com'];
+    }
+    function adminOk() {
+      return admin() && request.resource.data.ownerUid == resource.data.ownerUid
+        && (request.resource.data.status != 'CustomerApproved' || resource.data.status == 'CustomerApproved')
+        && (request.resource.data.status != 'Shipped' || resource.data.status in ['CustomerApproved','Shipped']);
+    }
+    function customerOk() {
+      return signedIn() && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','customerComment','updatedAt'])
+        && ((resource.data.status == 'Pending' && request.resource.data.status == 'Cancelled')
+         || (resource.data.status == 'PreviewReady' && request.resource.data.status in ['CustomerApproved','ChangeRequested']));
+    }
+    match /settings/{id} { allow read: if true; allow write: if admin(); }
+    match /tracks/{no} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if signedIn() && no.matches('^LA[A-Z0-9]{8}$')
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['ownerUid','phoneHash','status','updatedAt'])
+        && request.resource.data.status == 'Pending'
+        && request.resource.data.phoneHash is string && request.resource.data.phoneHash.size() == 64;
+      allow update: if admin() || (signedIn() && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updatedAt'])
+        && request.resource.data.status in ['Cancelled','CustomerApproved','ChangeRequested']);
+      allow delete: if admin();
+    }
+    match /trx/{t} {
+      allow read: if admin();
+      allow create: if signedIn() && t.matches('^[A-Z0-9]{6,20}$')
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['ownerUid','orderNo','createdAt']);
+      allow update: if signedIn() && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['ownerUid','orderNo','createdAt']);
+      allow delete: if admin();
+    }
+    match /reviews/{id} {
+      allow read: if resource.data.approved == true || admin() || (signedIn() && resource.data.ownerUid == request.auth.uid);
+      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['ownerUid','name1','rating','text','approved','createdAt'])
+        && request.resource.data.approved == false
+        && request.resource.data.rating is int && request.resource.data.rating >= 1 && request.resource.data.rating <= 5
+        && request.resource.data.text is string && request.resource.data.text.size() <= 300
+        && request.resource.data.name1 is string && request.resource.data.name1.size() < 40
+        && get(/databases/$(db)/documents/orders/$(id)).data.ownerUid == request.auth.uid
+        && get(/databases/$(db)/documents/orders/$(id)).data.status == 'Delivered';
+      allow update: if signedIn() && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerUid == resource.data.ownerUid
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.name1 == resource.data.name1
+        && request.resource.data.keys().hasOnly(['ownerUid','name1','rating','text','approved','createdAt'])
+        && request.resource.data.approved == false
+        && request.resource.data.rating is int && request.resource.data.rating >= 1 && request.resource.data.rating <= 5
+        && request.resource.data.text is string && request.resource.data.text.size() <= 300;
+      allow update, delete: if admin();
+    }
+    match /gallery/{id} { allow read: if true; allow write: if admin(); }
+    match /publicFeed/{id} { allow read: if true; allow write: if admin(); }
+    match /orderImages/{id} {
+      allow read: if signedIn() && (resource.data.ownerUid == request.auth.uid || admin());
+      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['ownerUid','data'])
+        && request.resource.data.data is string && request.resource.data.data.size() < 900000
+        && request.resource.data.data.matches('^data:image/jpeg;base64,.*');
+      allow update: if false;
+      allow delete: if admin();
+    }
+    match /orders/{id} {
+      allow read: if signedIn() && (resource.data.ownerUid == request.auth.uid || admin());
+      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.status == 'Pending' && request.resource.data.paymentStatus == 'Unpaid'
+        && request.resource.data.keys().hasOnly(['ownerUid','name','phone','district','upazila','address','note','isPublic','status','paymentStatus','paymentMethod','orderNo','category','advanceTrx','advanceFrom','advanceStatus','createdAt'])
+        && request.resource.data.isPublic is bool && request.resource.data.paymentMethod == 'COD'
+        && request.resource.data.orderNo.matches('^LA[A-Z0-9]{8}$')
+        && request.resource.data.category is string && request.resource.data.category.size() < 60
+        && request.resource.data.advanceTrx.matches('^[A-Z0-9]{6,20}$')
+        && request.resource.data.advanceFrom.matches('^01[0-9]{9}$')
+        && request.resource.data.advanceStatus == 'Pending'
+        && request.resource.data.district is string && request.resource.data.district.size() < 60
+        && request.resource.data.upazila is string && request.resource.data.upazila.size() < 60
+        && request.resource.data.name is string && request.resource.data.name.size() < 100
+        && request.resource.data.phone.matches('^01[0-9]{9}$')
+        && request.resource.data.address.size() < 400;
+      allow update: if adminOk() || customerOk();
+      allow delete: if admin();
+    }
+  }
+}
